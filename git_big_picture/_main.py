@@ -44,6 +44,8 @@ VIEWER = "viewer"
 OUT_FILE = "outfile"
 WAIT_SECONDS = "wait"
 SIMPLIFY = "simplify"
+BRANCH_COLORS = "branch_colors"
+TAG_COLORS = "tag_colors"
 OUTPUT_SETTINGS = [
     FORMAT,
     GRAPHVIZ,
@@ -52,6 +54,8 @@ OUTPUT_SETTINGS = [
     OUT_FILE,
     WAIT_SECONDS,
     SIMPLIFY,
+    BRANCH_COLORS,
+    TAG_COLORS,
 ]
 OUTPUT_DEFAULTS = {
     FORMAT: "svg",
@@ -61,6 +65,8 @@ OUTPUT_DEFAULTS = {
     OUT_FILE: False,
     WAIT_SECONDS: 2.0,
     SIMPLIFY: False,
+    BRANCH_COLORS: None,
+    TAG_COLORS: None,
 }
 
 # filter settings
@@ -143,6 +149,33 @@ def regex_type(s):
         return re.compile(s)
     except re.error as e:
         raise argparse.ArgumentTypeError(f"Invalid regex: {s} - {e}")
+
+
+class RegexpColorPairAction(argparse.Action):
+    # COLORPAT = re.compile("^[^=]+$")
+    priority = 0
+    def __init__(self, option_strings, dest, nargs=None, **kwargs):
+        if nargs is not None:
+            raise ValueError("nargs not allowed")
+        super().__init__(option_strings, dest, **kwargs)
+    def __call__(self, parser, namespace, values, option_string=None):
+        tmp = values.rsplit("=", 1)
+        if len(tmp) != 2:
+            raise ValueError(f"{option_string} parameter \"{values}\" must be \"regex=colorname\"")
+        try:
+            pat = re.compile(tmp[0])
+        except re.error as e:
+            raise argparse.ArgumentTypeError(f"Invalid regex: {tmp[0]} - {e}")
+        # if not re.match(RegexpColorPairAction.COLORPAT, tmp[1]):
+        #     raise argparse.ArgumentTypeError(f"Invalid color (may not contain =): {tmp[1]} - {e}")
+        if not hasattr(namespace, self.dest) or None == getattr(namespace, self.dest):
+            map = []
+            setattr(namespace, self.dest, map)
+        else:
+            map = getattr(namespace, self.dest)
+        RegexpColorPairAction.priority += 1
+        print(f"priority is {RegexpColorPairAction.priority}")
+        map.append([tmp[0], tmp[1], RegexpColorPairAction.priority])
 
 def create_parser():
     parser = argparse.ArgumentParser(
@@ -241,6 +274,18 @@ def create_parser():
         action="store_false",
         dest=OUT_FILE,
         help="disable writing image to file",
+    )
+    format_group.add_argument(
+        "--tagcolor", dest=TAG_COLORS, metavar="<regexp>=colorname",
+        default=None,
+        help="tags matching <regexp> use given alphanumeric colorname (can be repeated; last --tagcolor or --branchcolor has priority if more than one matches)",
+        action=RegexpColorPairAction,
+    )
+    format_group.add_argument(
+        "--branchcolor", dest=BRANCH_COLORS, metavar="<regexp>=colorname",
+        default=None,
+        help="branches matching <regexp> use given alphanumeric colorname (can be repeated; last --tagcolor or --branchcolor has priority if more than one matches)",
+        action=RegexpColorPairAction,
     )
 
     format_group.add_argument(
@@ -1094,7 +1139,8 @@ class CommitGraph:
         return 40
 
     def _generate_dot_file(
-        self, sha_ones_on_labels, with_commit_messages, sha_one_digits=None, history_direction=None
+        self, sha_ones_on_labels, with_commit_messages, sha_one_digits=None, history_direction=None,
+        branch_colors=None, tag_colors=None
     ):
         """Generate graphviz input.
 
@@ -1106,6 +1152,10 @@ class CommitGraph:
             if True the commit messages are displayed too
         sha_one_digits : int
             number of digits to use for showing sha1
+        history_direction : str
+            "downwards" | "leftwards" | "rightwords" | "upwards"
+        branch_colors : None | dict mapping regexps to alphanumeric strings
+        tag_colors : None | dict mapping regexps to alphanueric strings
 
         Returns
         -------
@@ -1141,6 +1191,23 @@ class CommitGraph:
                     labels.extend(sorted(self.branches[k]))
                 # http://www.graphviz.org/doc/info/colors.html
                 color = "/pastel13/%d" % case
+                priority = 0
+                if tag_colors:
+                    if k in self.tags:
+                        for tag in self.tags[k]:
+                            for (pat, col, prior) in tag_colors:
+                                if re.search(pat, tag):
+                                    if prior > priority:
+                                        priority = prior
+                                        color = col
+                if branch_colors:
+                    if k in self.branches:
+                        for branch in self.branches[k]:
+                            for (pat, col, prior) in branch_colors:
+                                if re.search(pat, branch):
+                                    if prior > priority:
+                                        priority = prior
+                                        color = col
                 yield (k, labels, color)
 
         dot_file_lines = ["digraph {"]
@@ -1211,6 +1278,8 @@ def innermost_main(opts):
         with_commit_messages=annotation_settings["messages"],
         sha_one_digits=sha_one_digits,
         history_direction=opts.history_direction,
+        branch_colors=output_settings[BRANCH_COLORS],
+        tag_colors=output_settings[TAG_COLORS],
     )
 
     if output_settings[GRAPHVIZ] and output_settings[PROCESSED]:
